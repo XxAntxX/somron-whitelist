@@ -1,3 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fabric Whitelist Portal</title>
+    
+    <script type="text/javascript" src="https://alcdn.msauth.net/browser/2.30.0/js/msal-browser.min.js"></script>
+    
+    <style>
+        body { background-color: #121212; color: #e0e0e0; font-family: 'Segoe UI', sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .container { background: #1e1e1e; padding: 2.5rem; border-radius: 16px; width: 350px; text-align: center; box-shadow: 0 20px 50px rgba(0,0,0,0.5); border: 1px solid #333; }
+        h1 { margin-top: 0; color: #fff; font-size: 1.8rem; }
+        p { color: #aaa; font-size: 0.95rem; margin-bottom: 1.5rem; }
+        
+        button { background: #008542; color: white; border: none; padding: 14px; width: 100%; border-radius: 8px; font-weight: 600; font-size: 1rem; cursor: pointer; transition: all 0.2s; }
+        button:hover { background: #00a150; transform: translateY(-2px); }
+        button:disabled { background: #444; cursor: not-allowed; transform: none; }
+
+        .profile-img { width: 80px; height: 80px; border-radius: 50%; margin: 10px auto; display: block; background: #333; object-fit: cover; }
+        .status { margin-top: 20px; font-size: 0.9rem; min-height: 1.2em; color: #888; }
+        .success { color: #4caf50; font-weight: bold; }
+        .error { color: #ff5252; }
+    </style>
+</head>
 <body>
 
 <div class="container">
@@ -6,6 +31,12 @@
     <div id="login-view">
         <p>Sign in to automatically join the whitelist.</p>
         <button id="btn-login" onclick="startLogin()" disabled>Loading configuration...</button>
+    </div>
+
+    <div id="success-view" style="display:none;">
+        <img id="avatar" class="profile-img" src="" alt="">
+        <h2 id="gamertag" style="margin: 10px 0;">Username</h2>
+        <p id="whitelist-msg" style="color:#F0B90B;">Connecting to server...</p>
     </div>
 
     <div id="status" class="status"></div>
@@ -19,18 +50,25 @@
 
     // 1. Initialize: Fetch Client ID from Docker/Server first
     async function init() {
+        // Check if script loaded
+        if (typeof msal === 'undefined') {
+            setStatus("Error: Microsoft Library blocked. Disable AdBlock.", "error");
+            return;
+        }
+
         try {
             const response = await fetch('/config');
             const config = await response.json();
             
             if (!config.clientId) {
-                throw new Error("Client ID not configured in Docker");
+                throw new Error("Client ID not found in Docker environment.");
             }
 
             msalInstance = new msal.PublicClientApplication({
                 auth: { 
                     clientId: config.clientId,
-                    authority: "https://login.microsoftonline.com/consumers" 
+                    authority: "https://login.microsoftonline.com/consumers",
+                    redirectUri: window.location.href.split('?')[0]
                 }
             });
 
@@ -40,6 +78,7 @@
             btn.disabled = false;
 
         } catch (e) {
+            console.error(e);
             setStatus("Setup Error: " + e.message, "error");
         }
     }
@@ -58,23 +97,24 @@
             document.getElementById('btn-login').disabled = true;
             setStatus("Waiting for Microsoft...");
             
-            // ... The rest of your login logic remains EXACTLY the same ...
-            // Just ensure you use 'msalInstance' which is now initialized above.
-            
             const loginRes = await msalInstance.loginPopup({ scopes: ["XboxLive.Signin", "offline_access"] });
             
             setStatus("Authenticating with Xbox...");
+            // 1. Xbox Auth
             const xbl = await fetchXbox("https://user.auth.xboxlive.com/user/authenticate", {
                 Properties: { AuthMethod: "RPS", SiteName: "user.auth.xboxlive.com", RpsTicket: "d=" + loginRes.accessToken },
                 RelyingParty: "http://auth.xboxlive.com", TokenType: "JWT"
             });
 
+            // 2. XSTS Auth
             const xsts = await fetchXbox("https://xsts.auth.xboxlive.com/xsts/authorize", {
                 Properties: { SandboxId: "RETAIL", UserTokens: [xbl.Token] },
                 RelyingParty: "http://xboxlive.com", TokenType: "JWT"
             });
 
+            // 3. Get Profile
             const profile = await getXboxProfile(xsts.DisplayClaims.xui[0].uhs, xsts.Token);
+            
             displayProfile(profile);
             
         } catch (err) {
@@ -84,9 +124,8 @@
         }
     }
 
-    // ... Include fetchXbox, getXboxProfile, displayProfile, runWhitelist functions here ...
-    // (Copy them from the previous response, they haven't changed)
-    
+    // --- API HELPERS ---
+
     async function fetchXbox(url, body) {
         const res = await fetch(CORS_PROXY + encodeURIComponent(url), {
             method: "POST", body: JSON.stringify(body),
@@ -135,6 +174,7 @@
                 throw new Error("Server rejected request");
             }
         } catch (e) {
+            console.error(e);
             msgEl.innerText = "❌ Connection Failed";
             msgEl.style.color = "#ff5252";
         }
