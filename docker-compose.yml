@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  whitelist-portal:
+    build: .
+    container_name: whitelist-portal
+    ports:
+      - "8080:3000"
+    environment:
+      - RCON_HOST=host.docker.internal
+      - RCON_PORT=25575
+      - RCON_PASSWORD=mySecretPassword
+      - AZURE_CLIENT_ID=your-actual-azure-client-id-here  # <--- ADD THIS
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

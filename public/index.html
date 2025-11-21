@@ -1,0 +1,144 @@
+<body>
+
+<div class="container">
+    <h1>Fabric Server Access</h1>
+    
+    <div id="login-view">
+        <p>Sign in to automatically join the whitelist.</p>
+        <button id="btn-login" onclick="startLogin()" disabled>Loading configuration...</button>
+    </div>
+
+    <div id="status" class="status"></div>
+</div>
+
+<script>
+    const BRIDGE_URL = "/whitelist";
+    const CORS_PROXY = "https://corsproxy.io/?url=";
+    
+    let msalInstance = null;
+
+    // 1. Initialize: Fetch Client ID from Docker/Server first
+    async function init() {
+        try {
+            const response = await fetch('/config');
+            const config = await response.json();
+            
+            if (!config.clientId) {
+                throw new Error("Client ID not configured in Docker");
+            }
+
+            msalInstance = new msal.PublicClientApplication({
+                auth: { 
+                    clientId: config.clientId,
+                    authority: "https://login.microsoftonline.com/consumers" 
+                }
+            });
+
+            // Enable the button now that we are ready
+            const btn = document.getElementById('btn-login');
+            btn.innerText = "Sign in with Microsoft";
+            btn.disabled = false;
+
+        } catch (e) {
+            setStatus("Setup Error: " + e.message, "error");
+        }
+    }
+
+    // Run init on page load
+    window.onload = init;
+
+    function setStatus(msg, type) {
+        const el = document.getElementById('status');
+        el.innerText = msg;
+        el.className = "status " + (type || "");
+    }
+
+    async function startLogin() {
+        try {
+            document.getElementById('btn-login').disabled = true;
+            setStatus("Waiting for Microsoft...");
+            
+            // ... The rest of your login logic remains EXACTLY the same ...
+            // Just ensure you use 'msalInstance' which is now initialized above.
+            
+            const loginRes = await msalInstance.loginPopup({ scopes: ["XboxLive.Signin", "offline_access"] });
+            
+            setStatus("Authenticating with Xbox...");
+            const xbl = await fetchXbox("https://user.auth.xboxlive.com/user/authenticate", {
+                Properties: { AuthMethod: "RPS", SiteName: "user.auth.xboxlive.com", RpsTicket: "d=" + loginRes.accessToken },
+                RelyingParty: "http://auth.xboxlive.com", TokenType: "JWT"
+            });
+
+            const xsts = await fetchXbox("https://xsts.auth.xboxlive.com/xsts/authorize", {
+                Properties: { SandboxId: "RETAIL", UserTokens: [xbl.Token] },
+                RelyingParty: "http://xboxlive.com", TokenType: "JWT"
+            });
+
+            const profile = await getXboxProfile(xsts.DisplayClaims.xui[0].uhs, xsts.Token);
+            displayProfile(profile);
+            
+        } catch (err) {
+            console.error(err);
+            setStatus(err.message, "error");
+            document.getElementById('btn-login').disabled = false;
+        }
+    }
+
+    // ... Include fetchXbox, getXboxProfile, displayProfile, runWhitelist functions here ...
+    // (Copy them from the previous response, they haven't changed)
+    
+    async function fetchXbox(url, body) {
+        const res = await fetch(CORS_PROXY + encodeURIComponent(url), {
+            method: "POST", body: JSON.stringify(body),
+            headers: { "Content-Type": "application/json", "Accept": "application/json" }
+        });
+        if (!res.ok) throw new Error("Xbox Auth Failed");
+        return res.json();
+    }
+
+    async function getXboxProfile(uhs, xsts) {
+        const url = `https://profile.xboxlive.com/users/me/profile/settings?settings=Gamertag,GameDisplayPicRaw`;
+        const res = await fetch(CORS_PROXY + encodeURIComponent(url), {
+            headers: { "Authorization": `XBL3.0 x=${uhs};${xsts}`, "x-xbl-contract-version": "2" }
+        });
+        return res.json();
+    }
+
+    function displayProfile(data) {
+        document.getElementById('login-view').style.display = 'none';
+        document.getElementById('success-view').style.display = 'block';
+        
+        const settings = data.profileUsers[0].settings;
+        const gamertag = settings.find(s => s.id === "Gamertag").value;
+        const avatar = settings.find(s => s.id === "GameDisplayPicRaw").value;
+
+        document.getElementById('gamertag').innerText = gamertag;
+        document.getElementById('avatar').src = avatar;
+        
+        setStatus("");
+        runWhitelist(gamertag);
+    }
+
+    async function runWhitelist(username) {
+        const msgEl = document.getElementById('whitelist-msg');
+        try {
+            const res = await fetch(BRIDGE_URL, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ username: username })
+            });
+            const data = await res.json();
+            if (data.success) {
+                msgEl.innerText = "✅ Successfully Whitelisted!";
+                msgEl.className = "success";
+            } else {
+                throw new Error("Server rejected request");
+            }
+        } catch (e) {
+            msgEl.innerText = "❌ Connection Failed";
+            msgEl.style.color = "#ff5252";
+        }
+    }
+</script>
+</body>
+</html>
