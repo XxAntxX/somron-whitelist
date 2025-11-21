@@ -1,0 +1,1 @@
+# somron-whitlist
